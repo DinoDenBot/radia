@@ -306,7 +306,9 @@ class RadiaClient:
         # One exchange at a time. Ten threads hitting an expired token must produce ONE new run,
         # not ten: each mint writes a record, and a fleet waking together would append a burst of
         # them and discard all but the last.
-        self._exchange_lock = threading.Lock()
+        # Re-entrant because agent_loop holds this across take + token snapshot while take may
+        # itself recover an expired credential through _exchange.
+        self._exchange_lock = threading.RLock()
 
     def with_token(self, token: str) -> "RadiaClient":
         return RadiaClient(self.base, token, self.timeout)
@@ -1274,9 +1276,18 @@ def agent_loop(
 
     while not stop.is_set():
         claimed = None
+        claim_client: Optional[RadiaClient] = None
         try:
             for pattern in patterns:
-                claimed = client.take({"pattern": pattern}, lease_seconds=lease_seconds)
+                # The lease belongs to the exact run token that won the take. Keep exchange and
+                # snapshot atomic: the long-lived client may rotate credentials between claims,
+                # but heartbeat, handler calls, acknowledgement and rejection may never migrate an
+                # already acquired lease to the replacement run.
+                with client._exchange_lock:
+                    claimed = client.take({"pattern": pattern}, lease_seconds=lease_seconds)
+                    if claimed:
+                        claim_client = client.with_token(str(client.token))
+                        claim_client.run = str(claimed["lease"].get("ownerRun") or "")
                 if claimed:
                     break
         except RadiaError as e:
@@ -1289,17 +1300,18 @@ def agent_loop(
 
         lease = claimed["lease"]
         record = claimed["record"]
-        beat = _Heartbeat(client, lease, lease_seconds)
+        assert claim_client is not None
+        beat = _Heartbeat(claim_client, lease, lease_seconds)
         beat.start()
         try:
-            result = handle(record, client, beat.lost) if wants_fence else handle(record, client)
+            result = handle(record, claim_client, beat.lost) if wants_fence else handle(record, claim_client)
             if beat.lost.is_set():
                 # The work finished, but somebody else owns the record now: settling is pointless
                 # and the log has to say which of the two happened.
                 say(f"[{name}] {record['id'][-6:]} finished after being fenced ({beat.reason}): not settled")
             else:
                 key = f"ack:{record['id']}:{lease['epoch']}"
-                res = client.ack(lease, result, idempotency_key=key)
+                res = claim_client.ack(lease, result, idempotency_key=key)
                 if res.get("status") == "lease_lost":
                     say(f"[{name}] fenced on {record['id'][-6:]}: duplicate work possible (at-least-once)")
                 else:
@@ -1312,7 +1324,7 @@ def agent_loop(
                 say(f"[{name}] {record['id'][-6:]} stopped on the fence ({beat.reason}): {e}")
             else:
                 try:
-                    client.nack(lease)
+                    claim_client.nack(lease)
                 except RadiaError:
                     pass
                 report(f"[{name}] {record['id'][-6:]} -> nack: {e}")
