@@ -313,6 +313,10 @@ class RadiaClient:
     def with_token(self, token: str) -> "RadiaClient":
         return RadiaClient(self.base, token, self.timeout)
 
+    def claim_context(self) -> Dict[str, Any]:
+        """Return immutable lease metadata when this is an agent-loop claim client."""
+        return dict(getattr(self, "_claim_context", {}))
+
     # -- the credential, kept alive without anybody re-authenticating --
 
     def ensure_credential(self) -> None:
@@ -1288,6 +1292,11 @@ def agent_loop(
                     if claimed:
                         claim_client = client.with_token(str(client.token))
                         claim_client.run = str(claimed["lease"].get("ownerRun") or "")
+                        claim_client._claim_context = {
+                            "leaseId": claimed["lease"].get("leaseId"),
+                            "ownerRun": claimed["lease"].get("ownerRun"),
+                            "epoch": claimed["lease"].get("epoch"),
+                        }
                 if claimed:
                     break
         except RadiaError as e:

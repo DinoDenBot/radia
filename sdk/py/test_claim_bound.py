@@ -11,6 +11,9 @@ class _BoundClient:
         self.run = None
         self.calls = calls
 
+    def claim_context(self):
+        return dict(getattr(self, "_claim_context", {}))
+
     def renew(self, lease, lease_seconds=None):
         self.calls.append(("renew", self.token, lease["leaseId"]))
         return {"status": "renewed"}
@@ -63,6 +66,8 @@ class ClaimBoundAgentLoopTest(unittest.TestCase):
         def handle(_record, claim_client, _fenced):
             time.sleep(1.2)  # one lease heartbeat, after the parent rotates
             self.assertEqual("run-token-that-claimed", claim_client.token)
+            self.assertEqual({"leaseId": "lease-1", "ownerRun": "run:claiming", "epoch": 1},
+                             claim_client.claim_context())
             stop.set()
             return {"kind": "result", "body": {"ok": True}}
 
