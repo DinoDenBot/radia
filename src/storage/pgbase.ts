@@ -675,8 +675,8 @@ export class PgSqlAdapter implements StorageAdapter {
       for (const cand of ranked) {
         const id = cand.record.id;
         const epoch = (cand.env.leaseEpoch ?? 0) + 1;
-        const leasedUntil = addSeconds(now, spec.leaseSeconds);
         const hardDeadline = addSeconds(now, spec.maxCumulativeSeconds);
+        const leasedUntil = minIso(addSeconds(now, spec.leaseSeconds), hardDeadline);
 
         if (cand.how === "expired") {
           const newAttempt = cand.env.attempt + 1;

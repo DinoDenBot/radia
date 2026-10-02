@@ -129,6 +129,31 @@ export const leaseSuites: Suite[] = [
     },
   },
   {
+    name: "initial lease length cannot bypass the cumulative hard cap",
+    run: async (adapter) => {
+      const space = newSpace(adapter, { maxCumulativeSeconds: 0 });
+      await space.put({ kind: "task", body: { tag: "a" } });
+      const taken = await nonNull(space.take({ pattern: { kind: "task" } }, { leaseSeconds: 3600 }));
+      assertEquals((await space.renew(taken.lease)).status, "lease_lost");
+    },
+  },
+  {
+    name: "one kind may have a longer cumulative cap without widening other work",
+    run: async (adapter) => {
+      const space = newSpace(adapter, {
+        maxCumulativeSeconds: 0,
+        maxCumulativeSecondsByKind: { task: 3600 },
+      });
+      space.registerKind({ kind: "other_task", indexedPaths: [] });
+      await space.put({ kind: "task", body: { tag: "long" } });
+      await space.put({ kind: "other_task", body: {} });
+      const long = await nonNull(space.take({ pattern: { kind: "task" } }));
+      const short = await nonNull(space.take({ pattern: { kind: "other_task" } }));
+      assertEquals((await space.renew(long.lease)).status, "ok");
+      assertEquals((await space.renew(short.lease)).status, "lease_lost");
+    },
+  },
+  {
     name: "take by record_id is a selector, not a bypass (still fences and consumes)",
     run: async (adapter) => {
       const space = newSpace(adapter);

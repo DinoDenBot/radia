@@ -123,6 +123,8 @@ export interface SpaceContext {
   defaultBackoffSeconds: number;
   maxAttempts: number;
   maxCumulativeSeconds: number;
+  /** Optional per-kind cumulative lease caps for work that legitimately spans hours. */
+  maxCumulativeSecondsByKind: Record<string, number>;
   /** The one supervisor agent that, like an operator, may write grants/signal and reach `/ops/*`. */
   supervisor: string;
   /**
@@ -246,6 +248,7 @@ const DEFAULT_CONTEXT: SpaceContext = {
   defaultBackoffSeconds: 5,
   maxAttempts: 5,
   maxCumulativeSeconds: 300,
+  maxCumulativeSecondsByKind: {},
   supervisor: "agent:supervisor",
   operators: ["human:local"], // the no-header dev identity; add people deliberately
   runTokenSeconds: 900, // 15 min; a live run RENEWS before expiry (`renewRun`)
@@ -1967,11 +1970,14 @@ export class Space {
       }
     }
     const principal = checkedFor ?? owner;
+    const leaseKind = pattern?.kind ?? ("recordId" in sel ? (await this.storage.getRecord(sel.recordId))?.kind : undefined);
     const spec: LeaseSpec = {
       leaseId: newUlid(),
       ownerRun: principal ?? this.ctx.runId,
       leaseSeconds: opts.leaseSeconds ?? this.ctx.defaultLeaseSeconds,
-      maxCumulativeSeconds: this.ctx.maxCumulativeSeconds,
+      maxCumulativeSeconds: leaseKind === undefined
+        ? this.ctx.maxCumulativeSeconds
+        : (this.ctx.maxCumulativeSecondsByKind[leaseKind] ?? this.ctx.maxCumulativeSeconds),
       maxAttempts: this.ctx.maxAttempts,
       // Validated HERE, not only at the HTTP boundary: the SDK, the MCP adapter and in-process
       // callers never pass through a handler, the same reason `compilePattern` validates its own

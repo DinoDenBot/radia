@@ -23,7 +23,7 @@ import {
 } from "./credentials.ts";
 import { runCli } from "./surfaces/cli.ts";
 import { runMcp } from "./surfaces/mcp/server.ts";
-import { flag, has, optionalFlag } from "./flags.ts";
+import { flag, flags, has, optionalFlag } from "./flags.ts";
 import { defaultBlobDir, defaultDbPath, defaultKekPath, defaultSealPath, ensureParent, radiaDir } from "./paths.ts";
 import { acquireDbLock, lockRefusal } from "./lock.ts";
 import { args as argv, env, exit, onShutdown, readTextFile, restrictToOwner, UsageError, writeTextFile } from "./platform.ts";
@@ -46,6 +46,7 @@ const USAGE = `radia <command>
       [--blob-kek [file]] [--seal-key [file]] [--auth required|open]
       [--artifact-port <n>] [--max-scan-rows <n>] [--event-retention <seconds>]
       [--max-put-delay <seconds>] [--max-record-bytes <n>]
+      [--lease-cap <kind>:<seconds>] (repeatable; default cap is 300 seconds)
       [--oidc-issuer <url> --oidc-audience <client-id>]
       Run an embedded space + web console. Everything it writes goes under ./.radia
       (RADIA_DIR moves it); bare --db and --blob-kek take their defaults from there.
@@ -272,6 +273,16 @@ async function runSpace(args: string[], posture: Posture): Promise<number> {
   if (maxRecordBytes !== undefined && (!Number.isInteger(maxRecordBytes) || maxRecordBytes < 1024)) {
     throw new UsageError(`--max-record-bytes must be a whole number of bytes, at least 1024, got '${bodyFlag}'`);
   }
+  const maxCumulativeSecondsByKind: Record<string, number> = {};
+  for (const raw of flags(args, "--lease-cap")) {
+    const match = /^([a-z][a-z0-9_]*)\:([0-9]+)$/.exec(raw);
+    const seconds = match ? Number(match[2]) : NaN;
+    if (!match || !Number.isSafeInteger(seconds) || seconds < 1 || seconds > 86400 ||
+        Object.hasOwn(maxCumulativeSecondsByKind, match[1])) {
+      throw new UsageError(`--lease-cap needs a unique kind:seconds pair with 1..86400 seconds, got '${raw}'`);
+    }
+    maxCumulativeSecondsByKind[match[1]] = seconds;
+  }
   // How far ahead a writer may defer a record's claimability (`PutRequest.availableAt`). A ceiling
   // because retention GC never sweeps unclaimed CLAIMABLE work, so a record deferred past any
   // horizon is litter no sweep can reach; `0` refuses deferral entirely.
@@ -289,12 +300,16 @@ async function runSpace(args: string[], posture: Posture): Promise<number> {
     throw new UsageError("--oidc-issuer and --oidc-audience must be given together");
   }
   const space = new Space(storage, {
+    maxCumulativeSecondsByKind,
     ...(maxScanRows === undefined ? {} : { maxScanRows }),
     ...(eventRetentionSeconds === undefined ? {} : { eventRetentionSeconds }),
     ...(maxPutDelaySeconds === undefined ? {} : { maxPutDelaySeconds }),
     ...(maxRecordBytes === undefined ? {} : { maxRecordBytes }),
     ...(oidcIssuer && oidcAudience ? { oidc: { issuer: oidcIssuer, audience: oidcAudience } } : {}),
   }, blobs);
+  for (const [kind, seconds] of Object.entries(maxCumulativeSecondsByKind)) {
+    log.info(`cumulative lease cap for ${kind}: ${seconds}s`);
+  }
   if (oidcIssuer && oidcAudience) {
     log.info(`OIDC sign-in enabled (issuer ${oidcIssuer}, audience ${oidcAudience})`);
   }
