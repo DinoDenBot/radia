@@ -22,6 +22,7 @@ Typical use::
 from __future__ import annotations
 
 import hashlib
+import http.client
 import inspect
 import json
 import os
@@ -395,7 +396,11 @@ class RadiaClient:
             with urllib.request.urlopen(req, timeout=self.timeout) as res:
                 text = res.read().decode("utf-8")
         except urllib.error.HTTPError as e:
-            text = e.read().decode("utf-8")
+            try:
+                text = e.read().decode("utf-8")
+            except (OSError, http.client.HTTPException) as read_error:
+                # Keep an authoritative status (especially 401/403) even if its body drops.
+                raise RadiaError(e.code, "error", f"HTTP {e.code}; response body unavailable: {read_error}") from None
             try:
                 problem = json.loads(text)
             except ValueError:
@@ -403,6 +408,10 @@ class RadiaClient:
             raise RadiaError(e.code, problem.get("title", "error"), problem.get("detail", text)) from None
         except urllib.error.URLError as e:
             raise RadiaError(0, "unreachable", f"cannot reach a space at {self.base}: {e.reason}") from None
+        except (OSError, http.client.HTTPException) as e:
+            # urllib does not wrap failures while reading headers or a response body.
+            # Normalize those too, so worker and renewal loops can retry a dropped connection.
+            raise RadiaError(0, "unreachable", f"cannot reach a space at {self.base}: {e}") from None
         return json.loads(text) if text else None
 
     # -- health and discovery --
@@ -1229,7 +1238,8 @@ class RadiaClient:
                     watch_id = None
                     continue
                 time.sleep(0.3)
-            except urllib.error.URLError:
+            except (OSError, http.client.HTTPException):
+                # URLError is an OSError; raw socket/read failures need the same reconnect.
                 time.sleep(0.3)
             if stop is not None and stop.wait(0.2):
                 return
