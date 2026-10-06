@@ -10,4 +10,6 @@ for v in "${versions[@]}"; do
   echo "== python $v"
   docker build -q --build-arg "PY_VERSION=$v" -t "radia-py-parity:$v" docker/py-parity
   docker run --rm -v "$PWD":/repo:ro "radia-py-parity:$v"
+  docker run --rm -v "$PWD":/repo:ro "radia-py-parity:$v" \
+    python3 -B -m unittest discover -s sdk/py -v
 done

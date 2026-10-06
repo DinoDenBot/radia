@@ -153,6 +153,11 @@ attempt count of whoever holds the record now. The heartbeat ignores everything 
 blip, a 5xx): the lease has until its expiry, and treating a hiccup as a fence would cancel work
 that is still legitimately this worker's.
 
+Python reports transport failures as `RadiaError(0, "unreachable", …)`, including socket timeouts
+and dropped connections while reading headers or bodies. Polling and token renewal therefore
+retry these failures; streaming watches reconnect with their last cursor. Invalid JSON remains
+a decoding error, and authorization failures retain their HTTP status.
+
 A `403` on a watch is treated as permanent (the run has no grant for that kind): both loops log it
 loudly once and fall back to polling, rather than retrying forever. "Silently slow" would be a
 worse failure than "loudly wrong".
